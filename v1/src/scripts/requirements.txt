@@ -1,0 +1,12 @@
+backoff
+datasets
+openai
+pytz
+anthropic
+google-genai
+ipykernel
+scikit-learn
+seaborn
+plotly
+nbformat
+vllm==0.8.5.post1

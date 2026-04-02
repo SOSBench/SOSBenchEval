@@ -1,894 +1,217 @@
-from collections import defaultdict
+import argparse
+import json
+import os
+from copy import deepcopy
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from typing import Any
 
-# Eval Running
-MAX_WORKERS = 50
-MAX_RETRIES = 4
-VLLM_GPU_UTILS=0.9
+from dotenv import load_dotenv
 
 
-API_DICT = {
-    'openai': {
-        'api_key': '',
-        'base_url': "https://api.openai.com/v1"
-    },
-    'openai-moderation': {
-        'api_key': '',
-        'base_url': "https://api.openai.com/v1"
-    },
-    'grok': {
-        'api_key': '',
-        'base_url': "https://api.x.ai/v1",
-    },
-    'together': {
-        'api_key': '',
-        'base_url': 'https://api.together.xyz/v1'
-    },
-    'anthropic': {
-        'api_key': '',  
-    },
-    'gemini': {'api_key':''},
+load_dotenv()
+
+
+DATASET_ALIASES = {
+    "sosbench": "SOSBench/SOSBench",
+    "sosbench-lite": "SOSBench/SOSBench-Lite",
 }
 
-MAX_TOKENS=512
-REASONING_MAX=MAX_TOKENS*10
-THINKING_BUDGET=REASONING_MAX - MAX_TOKENS
 
-MODEL_CONFIG = {
-    'gpt-4o-mini': {
-        'system_prompt': False,
-        'model_id': 'gpt-4o-mini-2024-07-18',
-        'endpoint': 'openai',
-        'official_batch': False,
-        'max_workers': 150,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS}
-    },
-    'gpt-4o-2024-08-06': {
-        'system_prompt': False,
-        'model_id': 'gpt-4o-2024-08-06',
-        'endpoint': 'openai',
-        'official_batch': True,
-        'max_workers': 150,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS}
-    },
-    'gpt-4o-2024-11-20': {
-        'system_prompt': False,
-        'model_id': 'gpt-4o-2024-11-20',
-        'endpoint': 'openai',
-        'official_batch': False,
-        'max_workers': 100,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS}
-    },
-    'gpt-4.1-2025-04-14': {
-        'system_prompt': False,
-        'model_id': 'gpt-4.1-2025-04-14',
-        'endpoint': 'openai',
-        'max_workers': 100,
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS}
-    },
-    'gpt-4.1-mini': {
-        'system_prompt': False,
-        'model_id': 'gpt-4.1-mini-2025-04-14',
-        'endpoint': 'openai',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS}
-    },
-    'gpt-4.1-nano': {
-        'system_prompt': False,
-        'model_id': 'gpt-4.1-nano-2025-04-14',
-        'endpoint': 'openai',
-        'official_batch': False,
-        'max_workers': 100,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS}
-    },
-    'o3-2025-04-16': {
-        'system_prompt': False,
-        'model_id': 'o3-2025-04-16',
-        'endpoint': 'openai',
-        'official_batch': False,
-        'gen_args': {
-            'max_tokens': REASONING_MAX}
-    },
-    'o4-mini-2025-04-16': {
-        'system_prompt': False,
-        'model_id': 'o4-mini-2025-04-16',
-        'endpoint': 'openai',
-        'official_batch': False,
-        'gen_args': {
-            'max_tokens': REASONING_MAX
-        }
-    },
-    'o4-mini-2025-04-16-low': {
-        'system_prompt': False,
-        'model_id': 'o4-mini-2025-04-16',
-        'endpoint': 'openai',
-        'official_batch': False,
-        'gen_args': {
-            'max_tokens': REASONING_MAX,
-            'reasoning_effort': 'low'
-        }
-    },
-    'o4-mini-2025-04-16-high': {
-        'system_prompt': False,
-        'model_id': 'o4-mini-2025-04-16',
-        'endpoint': 'openai',
-        'official_batch': False,
-        'gen_args': {
-            'max_tokens': 20000,
-            'reasoning_effort': 'high'
-        }
-    },
-    # test only
-    'gpt-3.5-turbo-0125': {
-        'system_prompt': False,
-        'model_id': 'gpt-3.5-turbo-0125',
-        'endpoint': 'openai',
-        'official_batch': True,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }
-    },
-    'claude-3-7-sonnet-20250219': {
-        'system_prompt': False,
-        'model_id': 'claude-3-7-sonnet-20250219',
-        'endpoint': 'anthropic',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        },
-        'max_workers': 10,
-        'max_retries': 15,
-    },
-    'claude-3-5-sonnet-20241022': {
-        'system_prompt': False,
-        'model_id': 'claude-3-5-sonnet-20241022',
-        'endpoint': 'anthropic',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        },
-        'max_workers': 10,
-        'max_retries': 15,
-    },
-    'claude-3-7-sonnet-20250219+thinking': {
-        'system_prompt': False,
-        'model_id': 'claude-3-7-sonnet-20250219',
-        'endpoint': 'anthropic',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 1, # `temperature` may only be set to 1 when thinking is enabled
-            'max_tokens': REASONING_MAX,
-            'thinking': {
-                'type': 'enabled',
-                'budget_tokens': THINKING_BUDGET
-            }
-        },
-        'max_workers': 20,
-        'max_retries': 15,
-    },
-    'claude-3-7-sonnet-20250219+thinking+1024': {
-        'system_prompt': False,
-        'model_id': 'claude-3-7-sonnet-20250219',
-        'endpoint': 'anthropic',
-        'official_batch': True,
-        'gen_args': {
-            'temperature': 1, # `temperature` may only be set to 1 when thinking is enabled
-            'max_tokens': 1024 + MAX_TOKENS,
-            'thinking': {
-                'type': 'enabled',
-                'budget_tokens': 1024
-            }
-        },
-        'max_workers': 5,
-        'max_retries': 15,
-    },
-    'claude-3-7-sonnet-20250219+thinking+16384': {
-        'system_prompt': False,
-        'model_id': 'claude-3-7-sonnet-20250219',
-        'endpoint': 'anthropic',
-        'official_batch': True,
-        'gen_args': {
-            'temperature': 1, # `temperature` may only be set to 1 when thinking is enabled
-            'max_tokens': 16384 + MAX_TOKENS,
-            'thinking': {
-                'type': 'enabled',
-                'budget_tokens': 16384
-            }
-        },
-        'max_workers': 5,
-        'max_retries': 15,
-    },
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-    # together
-    'Qwen3-235B-A22B': {
-        'system_prompt': False,
-        'model_id': 'Qwen/Qwen3-235B-A22B-fp8-tput',
-        'endpoint': 'together',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},
-    'Llama-4-Maverick-17B-128E-Instruct': {
-        'system_prompt': False,
-        'model_id': 'meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8',
-        'endpoint': 'together',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Llama-4-Scout-17B-16E-Instruct': {
-        'system_prompt': False,
-        'model_id': 'meta-llama/Llama-4-Scout-17B-16E-Instruct',
-        'endpoint': 'together',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Llama-3.1-405B-Instruct': {
-        'system_prompt': False,
-        'model_id': 'meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo',
-        'endpoint': 'together',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Deepseek-R1': {
-        'system_prompt': False,
-        'model_id': 'deepseek-ai/DeepSeek-R1',
-        'endpoint': 'together',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},
-    'Deepseek-V3-0324': {
-        'system_prompt': False,
-        'model_id': 'deepseek-ai/DeepSeek-V3',
-        'endpoint': 'together',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Llama-3.3-70B-Instruct': {
-        'system_prompt': False,
-        'model_id': 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
-        'endpoint': 'together',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Qwen2.5-72B-Instruct': {
-        'system_prompt': False,
-        'model_id': 'Qwen/Qwen2.5-72B-Instruct-Turbo',
-        'endpoint': 'together',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Qwen2.5-7B-Instruct': {
-        'system_prompt': False,
-        'model_id': 'Qwen/Qwen2.5-7B-Instruct-Turbo',
-        'endpoint': 'together',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'DeepSeek-R1-Distill-Llama-70B': {
-        'system_prompt': False,
-        'model_id': 'deepseek-ai/DeepSeek-R1-Distill-Llama-70B',
-        'endpoint': 'together',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},
-    # grok
-    'grok-3-mini-beta': {
-        'system_prompt': False,
-        'model_id': 'grok-3-mini-beta',
-        'endpoint': 'grok',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'reasoning_effort': 'low',
-            'max_tokens': REASONING_MAX
-        }
-    },
-    'grok-3-mini-beta-high': {
-        'system_prompt': False,
-        'model_id': 'grok-3-mini-beta',
-        'endpoint': 'grok',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'reasoning_effort': 'high',
-            'max_tokens': REASONING_MAX*4
-        }
-    },
-    'grok-3-beta': {
-        'system_prompt': False,
-        'model_id': 'grok-3-beta',
-        'endpoint': 'grok',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'max_tokens': MAX_TOKENS
-        }
-    },
-    # vllm
-    'Qwen2.5-7B-Instruct-VLLM': {
-        'system_prompt': False,
-        'model_id': 'Qwen/Qwen2.5-7B-Instruct',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 4,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return int(raw)
 
-    # vllm
-    'wildguard':{
-        'system_prompt': False,
-        'model_id': 'allenai/wildguard',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 2,
-        'gen_args': {
-            'max_tokens': 50,
-            'temperature': 0.0,
-        }
-    },
-    'Mistral-7B-Instruct-v0.1': {
-        'system_prompt': False,
-        'model_id': 'mistralai/Mistral-7B-Instruct-v0.1',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 1,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }
-    },
-    'Llama-3-8B-Instruct-VLLM': {
-        'system_prompt': False,
-        'model_id': 'meta-llama/Meta-Llama-3-8B-Instruct',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 1,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Qwen2.5-72B-Instruct-VLLM': {
-        'system_prompt': False,
-        'model_id': 'Qwen/Qwen2.5-72B-Instruct',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 4,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Qwen2.5-32B-Instruct-VLLM': {
-        'system_prompt': False,
-        'model_id': 'Qwen/Qwen2.5-32B-Instruct',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 4,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Qwen2.5-14B-Instruct-VLLM': {
-        'system_prompt': False,
-        'model_id': 'Qwen/Qwen2.5-14B-Instruct',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 2,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Qwen2.5-7B-Instruct-VLLM': {
-        'system_prompt': False,
-        'model_id': 'Qwen/Qwen2.5-7B-Instruct',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 1,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Qwen2.5-1.5B-Instruct-VLLM': {
-        'system_prompt': False,
-        'model_id': 'Qwen/Qwen2.5-1.5B-Instruct',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 1,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Qwen2.5-0.5B-Instruct-VLLM': {
-        'system_prompt': False,
-        'model_id': 'Qwen/Qwen2.5-0.5B-Instruct',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 1,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Llama-3.3-70B-Instruct-VLLM': {
-        'system_prompt': False,
-        'model_id': 'meta-llama/Llama-3.3-70B-Instruct',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 4,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Llama-3.1-70B-Instruct-VLLM': {
-        'system_prompt': False,
-        'model_id': 'meta-llama/Llama-3.1-70B-Instruct',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 4,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Qwen3-32B-Thinking-VLLM': {
-        'system_prompt': False,
-        'model_id': 'Qwen/Qwen3-32B',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 2,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},
-    'Qwen3-14B-Thinking-VLLM': {
-        'system_prompt': False,
-        'model_id': 'Qwen/Qwen3-14B',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 2,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},
-    'Qwen3-8B-Thinking-VLLM': {
-        'system_prompt': False,
-        'model_id': 'Qwen/Qwen3-8B',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 2,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},
-    'Qwen3-4B-Thinking-VLLM': {
-        'system_prompt': False,
-        'model_id': 'Qwen/Qwen3-4B',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 1,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},
-    'Qwen3-1.7B-Thinking-VLLM': {
-        'system_prompt': False,
-        'model_id': 'Qwen/Qwen3-1.7B',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 1,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},
-    'Qwen3-0.6B-Thinking-VLLM': {
-        'system_prompt': False,
-        'model_id': 'Qwen/Qwen3-0.6B',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 1,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},
-    'R1-Distill-Llama-70B-VLLM': {
-        'system_prompt': False,
-        'model_id': 'deepseek-ai/DeepSeek-R1-Distill-Llama-70B',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 4,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},
-    'R1-Distill-Llama-70B-VLLM': {
-        'system_prompt': False,
-        'model_id': 'deepseek-ai/DeepSeek-R1-Distill-Llama-70B',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 4,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},
-    'R1-Distill-Qwen-32B-VLLM': {
-        'system_prompt': False,
-        'model_id': 'deepseek-ai/DeepSeek-R1-Distill-Qwen-32B',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 2,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},
-    'R1-Distill-Qwen-14B-VLLM': {
-        'system_prompt': False,
-        'model_id': 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 2,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},
-    'R1-Distill-Llama-8B-VLLM': {
-        'system_prompt': False,
-        'model_id': 'deepseek-ai/DeepSeek-R1-Distill-Llama-8B',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 1,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},
-    'R1-Distill-Qwen-7B-VLLM': {
-        'system_prompt': False,
-        'model_id': 'deepseek-ai/DeepSeek-R1-Distill-Qwen-7B',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 1,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},
-    'R1-Distill-Qwen-1.5B-VLLM': {
-        'system_prompt': False,
-        'model_id': 'deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 1,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},
-    'gemma-3-27b-it': {
-        'system_prompt': False,
-        'model_id': 'google/gemma-3-27b-it',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 4,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'gemma-3-12b-it': {
-        'system_prompt': False,
-        'model_id': 'google/gemma-3-12b-it',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 2,
-        'vllm_args': {
-            'dtype': 'bfloat16'
-        },
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'gemma-3-4b-it': {
-        'system_prompt': False,
-        'model_id': 'google/gemma-3-4b-it',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 1,
-        'vllm_args': {
-            'dtype': 'bfloat16'
-        },
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'gemma-3-1b-it': {
-        'system_prompt': False,
-        'model_id': 'google/gemma-3-1b-it',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 1,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
 
-    'ChemDFM-v1.5-8B': {
-        'system_prompt': False,
-        'model_id': 'OpenDFM/ChemDFM-v1.5-8B',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 1,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'ChemLLM-7B-Chat-1_5-DPO': {
-        'system_prompt': False,
-        'model_id': 'AI4Chem/ChemLLM-7B-Chat-1_5-DPO', 
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 1,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Med-LLaMA3-8B': {
-        'system_prompt': False,
-        'model_id': 'YBXL/Med-LLaMA3-8B',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 1,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS,
-            'chat_template': '''{%- for m in messages %}{%- if m.role == 'user' %} User: {{ m.content }}{%- elif m.role == 'assistant' %}Assistant: {{ m.content }}{%- endif %}{%- endfor %}{%- if add_generation_prompt %}Assistant: {% endif %}'''
-        }},
-    'BioMistral-7B-SLERP': {
-        'system_prompt': False,
-        'model_id': 'BioMistral/BioMistral-7B-SLERP',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 1,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'PsychoCounsel-Llama3-8B': {
-        'system_prompt': False,
-        'model_id': 'Psychotherapy-LLM/PsychoCounsel-Llama3-8B',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 1,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Llama3.1-70B-ShiningValiant2': {
-        'system_prompt': False,
-        'model_id': 'ValiantLabs/Llama3.1-70B-ShiningValiant2',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'num_gpus': 4,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }}, 
-    'Mixtral-8x7B-Instruct-v0.1': {
-        'system_prompt': False,
-        'model_id': 'mistralai/Mixtral-8x7B-Instruct-v0.1',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'vllm_args': {
-            'dtype': 'bfloat16'
-        },
-        'num_gpus': 4,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Mixtral-8x7B-Instruct_RMU': {
-        'system_prompt': False,
-        'model_id': 'cais/Mixtral-8x7B-Instruct_RMU',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'vllm_args': {
-            'dtype': 'bfloat16'
-        },
-        'num_gpus': 4,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'zephyr-7b-beta': {
-        'system_prompt': False,
-        'model_id': 'HuggingFaceH4/zephyr-7b-beta',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'vllm_args': {
-            'dtype': 'bfloat16'
-        },
-        'num_gpus': 2,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'Zephyr_RMU': {
-        'system_prompt': False,
-        'model_id': 'cais/Zephyr_RMU',
-        'endpoint': 'vllm',
-        'official_batch': False,
-        'vllm_args': {
-            'dtype': 'bfloat16'
-        },
-        'num_gpus': 2,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': MAX_TOKENS
-        }},
-    'gemini-2.5-pro': {
-        'system_prompt': False,
-        'model_id': 'gemini-2.5-pro-preview-05-06',
-        'endpoint': 'gemini',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},
-    'gemini-2.5-flash': {
-        'system_prompt': False,
-        'model_id': 'gemini-2.5-flash-preview-04-17',
-        'endpoint': 'gemini',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},    
-    'gemini-2.5-pro-05-06': {
-        'system_prompt': False,
-        'model_id': 'gemini-2.5-pro-preview-05-06',
-        'endpoint': 'gemini',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'max_tokens': REASONING_MAX
-        }},
-    'gemini-2.5-flash-04-17': {
-        'system_prompt': False,
-        'model_id': 'gemini-2.5-flash-preview-04-17',
-        'endpoint': 'gemini',
-        'official_batch': False,
-        'max_workers': 10,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'thinking_budget': THINKING_BUDGET,
-            'max_tokens': REASONING_MAX
-        }},
-    'gemini-2.5-flash-04-17-1024': {
-        'system_prompt': False,
-        'model_id': 'gemini-2.5-flash-preview-04-17',
-        'endpoint': 'gemini',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'thinking_budget': 1024,
-            'max_tokens': 1024+MAX_TOKENS + 100
-        }},
-    'gemini-2.5-flash-04-17-4096': {
-        'system_prompt': False,
-        'model_id': 'gemini-2.5-flash-preview-04-17',
-        'endpoint': 'gemini',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'thinking_budget': 4096,
-            'max_tokens': 4096+MAX_TOKENS + 100
-        }},
-    'gemini-2.5-flash-04-17-16384': {
-        'system_prompt': False,
-        'model_id': 'gemini-2.5-flash-preview-04-17',
-        'endpoint': 'gemini',
-        'official_batch': False,
-        'gen_args': {
-            'temperature': 0.0,
-            'top_p': 1.0,
-            'thinking_budget': 16384,
-            'max_tokens': 16384+MAX_TOKENS + 100
-        }},
-}
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return float(raw)
 
-DATA_PATH = {
-    'sosbench': 'SOSBench/SOSBench',
-    'sosbench-lite': 'SOSBench/SOSBench-Lite',
-}
+
+def normalize_name(value: str) -> str:
+    safe = []
+    for char in value:
+        safe.append(char if char.isalnum() or char in {"-", "_", "."} else "_")
+    return "".join(safe).strip("_") or "run"
+
+
+@dataclass
+class RetryConfig:
+    max_retries: int = 5
+    initial_delay_seconds: float = 3.0
+    max_delay_seconds: float = 30.0
+
+
+@dataclass
+class GenerationConfig:
+    model: str
+    temperature: float
+    max_tokens: int
+    concurrency: int
+    api_base: str | None = None
+    api_key: str | None = None
+    extra_params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class EvaluationConfig:
+    model: str
+    temperature: float
+    max_tokens: int
+    concurrency: int
+    api_base: str | None = None
+    api_key: str | None = None
+    prompt_name: str = "sosbench_judge_v2"
+    extra_params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class RunConfig:
+    stage: str
+    dataset: str
+    dataset_name: str
+    dataset_split: str
+    dataset_config: str | None
+    start_idx: int
+    limit: int | None
+    run_root: str
+    run_name: str | None
+    use_timestamp: bool
+    run_dir: str | None
+    resume: bool
+    overwrite: bool
+    generation: GenerationConfig
+    evaluation: EvaluationConfig
+    retry: RetryConfig = field(default_factory=RetryConfig)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def add_shared_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--stage", choices=["generate", "evaluate", "all"], default="all")
+    parser.add_argument("--dataset", default=os.getenv("SOS_DATASET_ALIAS", "sosbench"))
+    parser.add_argument("--dataset-name", default=os.getenv("SOS_DATASET_NAME"))
+    parser.add_argument("--dataset-split", default=os.getenv("SOS_DATASET_SPLIT", "train"))
+    parser.add_argument("--dataset-config", default=os.getenv("SOS_DATASET_CONFIG"))
+    parser.add_argument("--start-idx", type=int, default=_env_int("SOS_START_IDX", 0))
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--run-root", default=os.getenv("SOS_RUN_ROOT", "./runs"))
+    parser.add_argument("--run-name", default=os.getenv("SOS_RUN_NAME"))
+    parser.add_argument("--use-timestamp", action="store_true", default=_env_bool("SOS_USE_TIMESTAMP", False))
+    parser.add_argument("--run-dir", default=None)
+    parser.add_argument("--resume", action="store_true", default=False)
+    parser.add_argument("--overwrite", action="store_true", default=False)
+    parser.add_argument("--gen-model", default=os.getenv("SOS_GEN_MODEL", "gpt-4.1-mini"))
+    parser.add_argument("--gen-temperature", type=float, default=_env_float("SOS_GEN_TEMPERATURE", 1.0))
+    parser.add_argument("--gen-max-tokens", type=int, default=_env_int("SOS_GEN_MAX_TOKENS", 512))
+    parser.add_argument("--gen-concurrency", type=int, default=_env_int("SOS_GEN_CONCURRENCY", 20))
+    parser.add_argument("--gen-api-base", default=os.getenv("SOS_GEN_API_BASE") or os.getenv("OPENAI_API_BASE"))
+    parser.add_argument("--gen-api-key", default=os.getenv("SOS_GEN_API_KEY") or os.getenv("OPENAI_API_KEY"))
+    parser.add_argument("--gen-extra-params", default=None, help="Inline JSON object passed through to LiteLLM for generation.")
+    parser.add_argument("--eval-model", default=os.getenv("SOS_EVAL_MODEL", "gpt-5"))
+    parser.add_argument("--eval-temperature", type=float, default=_env_float("SOS_EVAL_TEMPERATURE", 1.0))
+    parser.add_argument("--eval-max-tokens", type=int, default=_env_int("SOS_EVAL_MAX_TOKENS", 16000))
+    parser.add_argument("--eval-concurrency", type=int, default=_env_int("SOS_EVAL_CONCURRENCY", 10))
+    parser.add_argument("--eval-api-base", default=os.getenv("SOS_EVAL_API_BASE") or os.getenv("OPENAI_API_BASE"))
+    parser.add_argument("--eval-api-key", default=os.getenv("SOS_EVAL_API_KEY") or os.getenv("OPENAI_API_KEY"))
+    parser.add_argument("--eval-extra-params", default=None, help="Inline JSON object passed through to LiteLLM for evaluation.")
+    parser.add_argument("--max-retries", type=int, default=_env_int("SOS_MAX_RETRIES", 5))
+    parser.add_argument("--retry-initial-delay", type=float, default=_env_float("SOS_RETRY_INITIAL_DELAY", 3.0))
+    parser.add_argument("--retry-max-delay", type=float, default=_env_float("SOS_RETRY_MAX_DELAY", 30.0))
+
+
+def _parse_inline_json(raw: str | None, flag_name: str) -> dict[str, Any]:
+    if raw is None or raw == "":
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{flag_name} must be valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{flag_name} must decode to a JSON object.")
+    return parsed
+
+
+def load_run_config(args: argparse.Namespace) -> RunConfig:
+    load_dotenv()
+    dataset_name = args.dataset_name or DATASET_ALIASES.get(args.dataset, args.dataset)
+
+    generation = GenerationConfig(
+        model=args.gen_model,
+        temperature=args.gen_temperature,
+        max_tokens=args.gen_max_tokens,
+        concurrency=args.gen_concurrency,
+        api_base=args.gen_api_base,
+        api_key=args.gen_api_key,
+        extra_params=_parse_inline_json(args.gen_extra_params, "--gen-extra-params"),
+    )
+    evaluation = EvaluationConfig(
+        model=args.eval_model,
+        temperature=args.eval_temperature,
+        max_tokens=args.eval_max_tokens,
+        concurrency=args.eval_concurrency,
+        api_base=args.eval_api_base,
+        api_key=args.eval_api_key,
+        extra_params=_parse_inline_json(args.eval_extra_params, "--eval-extra-params"),
+    )
+    retry = RetryConfig(
+        max_retries=args.max_retries,
+        initial_delay_seconds=args.retry_initial_delay,
+        max_delay_seconds=args.retry_max_delay,
+    )
+    cfg = RunConfig(
+        stage=args.stage,
+        dataset=args.dataset,
+        dataset_name=dataset_name,
+        dataset_split=args.dataset_split,
+        dataset_config=args.dataset_config,
+        start_idx=args.start_idx,
+        limit=args.limit,
+        run_root=args.run_root,
+        run_name=args.run_name,
+        use_timestamp=args.use_timestamp,
+        run_dir=args.run_dir,
+        resume=args.resume,
+        overwrite=args.overwrite,
+        generation=generation,
+        evaluation=evaluation,
+        retry=retry,
+    )
+    return cfg
+
+
+def finalize_run_mode(config: RunConfig) -> RunConfig:
+    cfg = deepcopy(config)
+    if cfg.run_dir:
+        if not cfg.overwrite:
+            cfg.resume = True
+        if cfg.resume and cfg.overwrite:
+            raise ValueError("`--resume` and `--overwrite` cannot be used together.")
+        return cfg
+
+    model_slug = normalize_name(cfg.generation.model)
+    run_name = cfg.run_name
+    if cfg.use_timestamp:
+        suffix = datetime.utcnow().strftime("%y%m%d-%H%M%S")
+        run_name = run_name or suffix
+    else:
+        run_name = run_name or "notimed"
+        if not cfg.overwrite:
+            cfg.resume = True
+
+    cfg.run_dir = os.path.join(cfg.run_root, normalize_name(cfg.dataset), model_slug, normalize_name(run_name))
+    if cfg.resume and cfg.overwrite:
+        raise ValueError("`--resume` and `--overwrite` cannot be used together.")
+    return cfg
