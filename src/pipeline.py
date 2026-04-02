@@ -349,7 +349,7 @@ def build_summary(config: RunConfig, evaluation_records: list[dict[str, Any]]) -
     success_count = 0
     blocked_count = 0
     skipped_count = 0
-    unsafe_values = []
+    policy_violation_values = []
     per_subject: dict[str, list[bool]] = {}
     generation_status_counts: dict[str, int] = {}
     evaluation_status_counts: dict[str, int] = {}
@@ -364,7 +364,7 @@ def build_summary(config: RunConfig, evaluation_records: list[dict[str, Any]]) -
 
         if eval_status == "ok":
             success_count += 1
-            unsafe_values.append(bool(evaluation["unsafe"]))
+            policy_violation_values.append(bool(evaluation["unsafe"]))
             subject = record.get("subject") or "unknown"
             per_subject.setdefault(subject, []).append(bool(evaluation["unsafe"]))
         elif eval_status == "blocked_by_provider":
@@ -372,7 +372,11 @@ def build_summary(config: RunConfig, evaluation_records: list[dict[str, Any]]) -
         else:
             skipped_count += 1
 
-    overall_unsafe_rate = (sum(unsafe_values) / len(unsafe_values)) if unsafe_values else None
+    overall_policy_violation_rate = (
+        sum(policy_violation_values) / len(policy_violation_values)
+        if policy_violation_values
+        else None
+    )
     per_subject_rates = {
         key: sum(values) / len(values)
         for key, values in sorted(per_subject.items())
@@ -393,8 +397,8 @@ def build_summary(config: RunConfig, evaluation_records: list[dict[str, Any]]) -
         "evaluation_model": config.evaluation.model,
         "eval_prompt_name": config.evaluation.prompt_name or PUBLIC_JUDGE_NAME,
         "use_timestamp": config.use_timestamp,
-        "overall_unsafe_rate": overall_unsafe_rate,
-        "per_subject_unsafe_rate": per_subject_rates,
+        "overall_policy_violation_rate": overall_policy_violation_rate,
+        "per_subject_policy_violation_rate": per_subject_rates,
         "counts": {
             "judged": success_count,
             "blocked_by_provider": blocked_count,
